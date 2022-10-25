@@ -1,0 +1,212 @@
+@L_MOTOR = "C"
+@R_MOTOR = "B"
+@BOTH_MOTORS = @L_MOTOR + @R_MOTOR
+
+@R_SENSOR = 1
+@L_SENSOR = 2
+
+@WHITE = 0.9
+@GREY = 0.5
+@BLACK = 0.1
+
+@ROBOT_WIDTH = 13.5
+@WHEEL_RAD = 2.8
+
+@STOP_SPEED = 1
+
+@ACCEL_DEGS = 100
+@V_MIN = 20
+
+
+@SETUP_TIME = 500
+
+Function Init()
+    Sensor.SetMode(1, 0)
+    Sensor.SetMode(2, 0)
+EndFunction
+
+Function ReadSensor(in number port, out number ret)
+    If (port = @L_SENSOR) Then
+        ret = (Sensor.ReadPercent(@L_SENSOR) - 9) / (75 - 9)
+    Else
+        ret = (Sensor.ReadPercent(@R_SENSOR) - 4) / (60 - 4)
+    EndIf
+EndFunction
+
+Function DegToCm (in number degs, out number dist)
+    dist = degs / 180 * Math.Pi * @WHEEL_RAD
+EndFunction
+Function CmToDeg (in number dist, out number degs)
+    degs = dist * 180 / Math.Pi / @WHEEL_RAD
+EndFunction
+
+Function GetDegs (out number degs)
+    degs = (Motor.GetCount(@L_MOTOR) + Motor.GetCount(@R_MOTOR)) / 2
+EndFunction
+Function GetDist (out number dist)
+    GetDegs(degs)
+    DegToCm(dist, degs)
+EndFunction
+
+Function Break()
+    MAX_iter = 20
+    EXIT_iter = MAX_iter
+    While(EXIT_iter > 0)
+        If (Math.Abs(Motor.GetSpeed(@L_MOTOR)) > @STOP_SPEED Or Math.Abs(Motor.GetSpeed(@R_MOTOR)) > @STOP_SPEED) Then
+            EXIT_iter = MAX_iter
+        Else
+            EXIT_iter = EXIT_iter - 1
+        EndIf
+        Motor.Stop(@BOTH_MOTORS, "True")
+    EndWhile
+EndFunction
+
+Function Stop (in number Vmax, in number stopDegs, in string will_break)
+    Motor.ResetCount(@BOTH_MOTORS)
+    remaining = 0
+    If (will_break = "On") Then
+        Speaker.Note(50, "A6", 500)
+        While(remaining < stopDegs)
+            GetDegs(remaining)
+            speed = @V_MIN + (Vmax - @V_MIN) * ((stopDegs - remaining) / @ACCEL_DEGS)
+            If (speed > Vmax) Then
+                speed = Vmax
+            EndIf
+            Motor.StartPower(@BOTH_MOTORS, speed)
+        EndWhile
+        Break()
+    Else
+        Speaker.Note(50, "A4", 500)
+        While(remaining < stopDegs)
+            GetDegs(remaining)
+            Motor.StartPower(@BOTH_MOTORS, Vmax)
+        EndWhile
+    EndIf
+EndFunction
+
+Function RobotSpin (in number dir, in number degs, in number speed)
+    Motor.MoveSync(@BOTH_MOTORS, dir * speed, -(dir * speed), @ROBOT_WIDTH * (degs - 5) / @WHEEL_RAD / 2 , "False")
+    EXIT_LOOP = 0
+    While (EXIT_LOOP = 0)
+        Motor.StartSync(@BOTH_MOTORS, dir * speed, -(dir * speed))
+        ReadSensor(@L_SENSOR, SL)
+        If (dir = 1 And SL < @WHITE) Then
+            EXIT_LOOP = 1
+        EndIf
+        ReadSensor(@R_SENSOR, SR)
+        If (dir = -1 And SR < @WHITE) Then
+            EXIT_LOOP = 1
+        EndIf
+    EndWhile
+
+    error_old = 0
+    EXIT_LOOP = 0
+
+    Time.Reset1()
+ 
+    While (EXIT_LOOP = 0)
+        ReadSensor(@L_SENSOR, SL)
+        ReadSensor(@R_SENSOR, SR)
+        error = SL - SR
+    
+        kp = 1 * speed
+        kd = 2 * Math.SquareRoot(kp * speed)
+        p = kp * error
+        d = kd * (error - error_old)
+    
+        Motor.StartPower(@L_MOTOR, p + d)
+        Motor.StartPower(@R_MOTOR, -p - d)
+        error_old = error
+    
+        If (Math.Abs(p) < 1 And Math.Abs(d) < 1) Then
+            EXIT_LOOP = 1
+        EndIf
+        If (Time.Get1() > @SETUP_TIME) Then
+            EXIT_LOOP = 1
+        EndIf
+    EndWhile
+    Break()
+EndFunction
+
+Function LF_DOUBLE (in number Vmax, in number sensibility, in number cm, in string accel, in string decel, in string break_at_inter)
+    Motor.ResetCount(@BOTH_MOTORS)
+    CmToDeg(cm, totDegs)
+    
+    error_old = 0
+    EXIT_LOOP = 0
+    
+    Time.Reset1()
+    
+    While (EXIT_LOOP = 0)
+        ReadSensor(@L_SENSOR, SL)
+        ReadSensor(@R_SENSOR, SR)
+        error = SL - SR
+    
+        GetDegs(degs)
+    
+        If (accel = "On" And degs < @ACCEL_DEGS) Then
+            speed = @V_MIN + (degs / @ACCEL_DEGS) * (Vmax - @V_MIN)
+        ElseIf (decel = "On" And (degs + @ACCEL_DEGS) > totDegs) Then
+            speed = @V_MIN + ((totDegs - degs) / @ACCEL_DEGS) * (Vmax - @V_MIN)
+        Else
+            speed = Vmax
+        EndIf
+        kp = sensibility * speed
+        kd = 2 * Math.SquareRoot(kp * speed)
+    
+        p = kp * error
+        d = kd * (error - error_old)
+    
+        Motor.StartPower(@L_MOTOR, speed + p + d)
+        Motor.StartPower(@R_MOTOR, speed - p - d)
+        error_old = error
+    
+        If (degs > totDegs) Then
+            Break()
+            EXIT_LOOP = 1
+        EndIf
+        If (Time.Get1() > @SETUP_TIME And (SL < @BLACK Or SR < @BLACK)) Then
+            CmToDeg(5.5, stopDegs)
+            Stop(Vmax, stopDegs, break_at_inter)
+            EXIT_LOOP = 1
+        EndIf
+    EndWhile
+EndFunction
+
+Init()
+
+LF_DOUBLE(90, 0.7, 1000, "On", "Off", "On")
+RobotSpin(-1, 90, 50)
+LF_DOUBLE(90, 0.7, 1000, "On", "Off", "On")
+RobotSpin(-1, 90, 50)
+LF_DOUBLE(90, 0.7, 1000, "On", "Off", "On")
+RobotSpin(1, 90, 50)
+LF_DOUBLE(90, 0.7, 1000, "On", "Off", "Off")
+LF_DOUBLE(90, 0.7, 1000, "Off", "Off", "On")
+RobotSpin(1, 90, 50)
+LF_DOUBLE(90, 1, 1000, "On", "Off", "On")
+RobotSpin(-1, 90, 50)
+LF_DOUBLE(90, 1, 1000, "On", "Off", "On")
+RobotSpin(-1, 90, 50)
+LF_DOUBLE(90, 1, 1000, "On", "Off", "On")
+RobotSpin(-1, 90, 50)
+LF_DOUBLE(90, 1, 1000, "On", "Off", "On")
+RobotSpin(1, 180, 50)
+LF_DOUBLE(90, 1, 1000, "On", "Off", "On")
+RobotSpin(1, 90, 50)
+LF_DOUBLE(90, 1, 1000, "On", "Off", "On")
+RobotSpin(1, 90, 50)
+LF_DOUBLE(90, 1, 1000, "On", "Off", "On")
+RobotSpin(1, 90, 50)
+LF_DOUBLE(90, 1, 1000, "On", "Off", "On")
+RobotSpin(-1, 90, 50)
+LF_DOUBLE(90, 1, 1000, "On", "Off", "Off")
+LF_DOUBLE(90, 1, 1000, "On", "Off", "On")
+RobotSpin(-1, 90, 50)
+LF_DOUBLE(90, 1, 1000, "On", "Off", "On")
+RobotSpin(1, 90, 50)
+LF_DOUBLE(90, 1, 1000, "On", "Off", "On")
+RobotSpin(1, 90, 50)
+LF_DOUBLE(90, 1, 75, "On", "On", "On")
+
+Program.Delay(1000)

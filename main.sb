@@ -1,0 +1,253 @@
+@L_MOTOR = "C"
+@R_MOTOR = "B"
+@BOTH_MOTORS = @L_MOTOR + @R_MOTOR
+
+@R_SENSOR = 1
+@L_SENSOR = 2
+
+@WHITE = 0.9
+@GREY = 0.5
+@BLACK = 0.1
+
+@HALF_WIDTH = 13.5
+@WHEEL_RAD = 2.8
+@HEIGHT = 5.5
+@DEGS_HEIGHT = @HEIGHT * 180 / Math.Pi / @WHEEL_RAD
+
+@SETUP_DEGS = 300
+@ACCEL_DEGS = 100
+@V_MIN = 20
+
+Function Init()
+    Sensor.SetMode(1, 0)
+    Sensor.SetMode(2, 0)
+EndFunction
+
+Function ReadSensor(in number port, out number ret)
+    If (port = @L_SENSOR) Then
+        ret = (Sensor.ReadPercent(@L_SENSOR) - 9) / (75 - 9)
+    Else
+        ret = (Sensor.ReadPercent(@R_SENSOR) - 4) / (60 - 4)
+    EndIf
+EndFunction
+
+Function DegToCm (in number degs, out number dist)
+    dist = degs / 180 * Math.Pi * @WHEEL_RAD
+EndFunction
+Function CmToDeg (in number dist, out number degs)
+    degs = dist * 180 / Math.Pi / @WHEEL_RAD
+EndFunction
+
+Function GetDegs (out number degs)
+    degs = (Motor.GetCount(@L_MOTOR) + Motor.GetCount(@R_MOTOR)) / 2
+EndFunction
+Function GetDist (out number dist)
+    GetDegs(degs)
+    DegToCm(dist, degs)
+EndFunction
+
+@STOP_SPEED = 1
+Function Break()
+    'Keep breaking until 20 consecutive While iterations with no speed
+    MAX_iter = 20
+    EXIT_iter = MAX_iter
+    While(EXIT_iter > 0)
+        If (Math.Abs(Motor.GetSpeed(@L_MOTOR)) > @STOP_SPEED Or Math.Abs(Motor.GetSpeed(@R_MOTOR)) > @STOP_SPEED) Then
+            EXIT_iter = MAX_iter
+        Else
+            EXIT_iter = EXIT_iter - 1
+        EndIf
+        Motor.Stop(@BOTH_MOTORS, "True")
+    EndWhile
+EndFunction
+
+Function Stop (in number Vmax, in number rotDegs)
+    Motor.ResetCount(@BOTH_MOTORS)
+    CmToDeg(@HEIGHT, totDegs)
+    remaining = 0
+
+    'Slow down in required distance
+    While(remaining < totDegs)
+        GetDegs(remaining)
+        speed = @V_MIN + (Vmax - @V_MIN) * ((totDegs - remaining) / @ACCEL_DEGS)
+        If (speed > Vmax) Then
+            speed = Vmax
+        EndIf
+        Motor.StartPower(@BOTH_MOTORS, speed)
+    EndWhile
+    Break()
+
+    Speaker.Note(50, "A5", 300)
+
+    If (rotDegs > 0) Then
+
+        'Rotate counter-clockwise
+        Motor.MoveSync(@BOTH_MOTORS, speed, -speed, (rotDegs - 5) * @HALF_WIDTH / @WHEEL_RAD, "False")
+        ReadSensor(@R_SENSOR, S)
+        While (S >= @WHITE)
+            Motor.StartSync(@BOTH_MOTORS, speed, -speed)
+            ReadSensor(@R_SENSOR, S)
+        EndWhile
+        Break()
+
+        Speaker.Note(50, "A6", 300)
+
+    ElseIf (rotDegs < 0) Then
+
+        'Rotate clockwise
+        Motor.MoveSync(@BOTH_MOTORS, -speed, speed, (rotDegs - 5) * @HALF_WIDTH / @WHEEL_RAD, "False")
+        ReadSensor(@L_SENSOR, S)
+        While (S >= @WHITE)
+            Motor.StartSync(@BOTH_MOTORS, speed, -speed)
+            ReadSensor(@L_SENSOR, S)
+        EndWhile
+        Break()
+
+        Speaker.Note(50, "A6", 300)
+
+    EndIf
+
+EndFunction
+
+Function Continue (in number Vmax, in number rotDegs)
+    Speaker.Note(50, "A4", 500)
+
+    CircRad = @HEIGHT / Math.Tan(rotDegs / 2)
+    Vother = Vmax * (CircRad + @HALF_WIDTH) / (CircRad - @HALF_WIDTH)
+
+    If (rotDegs > 0) Then
+
+        'Rotate counter-clockwise
+        Motor.MoveSync(@BOTH_MOTORS, Vother, Vmax, (rotDegs - 3) * (CircRad + @HALF_WIDTH) / @WHEEL_RAD, "False")
+        ReadSensor(@L_SENSOR, S)
+        While (S >= @WHITE)
+            Motor.StartSync(@BOTH_MOTORS, Vother, Vmax)
+            ReadSensor(@L_SENSOR, S)
+        EndWhile
+
+    ElseIf (rotDegs < 0) Then
+
+        'Rotate clockwise
+        Motor.MoveSync(@BOTH_MOTORS, Vmax, Vother, (rotDegs - 3) * (CircRad + @HALF_WIDTH) / @WHEEL_RAD, "False")
+        ReadSensor(@R_SENSOR, S)
+        While (S >= @WHITE)
+            Motor.StartSync(@BOTH_MOTORS, Vmax, Vother)
+            ReadSensor(@R_SENSOR, S)
+        EndWhile
+        
+    Else
+
+        'Keep going for required distance
+        While(remaining < @SETUP_DEGS)
+            GetDegs(remaining)
+            Motor.StartPower(@BOTH_MOTORS, Vmax)
+        EndWhile
+
+    EndIf
+
+    Speaker.Note(50, "A6", 500)
+EndFunction
+
+@SENSIV = 150
+Function LineFollow_double (in number totDist, in number Vmax, in string accel, in string decel, in number rotDegs, in string will_stop)
+    Motor.ResetCount(@BOTH_MOTORS)
+    CmToDeg(totDist, totDegs)
+    
+    lastDegs = 0
+    error_old = 0
+    EXIT_LOOP = 0
+    
+    While (EXIT_LOOP = 0)
+        'Read absolute error
+        ReadSensor(@L_SENSOR, SL)
+        ReadSensor(@R_SENSOR, SR)
+        error = SL - SR
+    
+        'Calculate current speed based on current position
+        GetDegs(degs)
+        If (accel = "On" And degs < @ACCEL_DEGS) Then
+            speed = @V_MIN + (degs / @ACCEL_DEGS) * (Vmax - @V_MIN)
+        ElseIf (decel = "On" And (degs + @ACCEL_DEGS) > totDegs) Then
+            speed = @V_MIN + ((totDegs - degs) / @ACCEL_DEGS) * (Vmax - @V_MIN)
+        Else
+            speed = Vmax
+        EndIf
+
+        
+        'Calculate correction parameters
+        corSpeed = degs - lastDegs
+        lastDegs = degs
+        kp = @SENSIV / corSpeed
+        kd = 2 * Math.SquareRoot(kp / corSpeed) / corSpeed
+        correction = kp * error + kd * (error - error_old)
+        error_old = error
+    
+        'Update motors
+        Motor.StartPower(@L_MOTOR, speed + correction)
+        Motor.StartPower(@R_MOTOR, speed - correction)
+    
+        If (degs > totDegs) Then
+            'Break end exit if distance is done
+            Break()
+            EXIT_LOOP = 1
+        EndIf
+        If (degs > @SETUP_DEGS And (SL < @BLACK Or SR < @BLACK)) Then
+            'Turn and exit if an intersection was found
+            If (will_stop = "True") Then
+                Stop(Vmax, break_at_inter)
+            Else
+                Continue(Vmax, break_at_inter)
+            EndIf
+            EXIT_LOOP = 1
+        EndIf
+    EndWhile
+EndFunction
+
+Init()
+
+Function Run_Standard ()
+    LineFollow_double(1000, 90, "On", "On", -90, "True")
+    LineFollow_double(1000, 90, "On", "On", -90, "True")
+    LineFollow_double(1000, 90, "On", "On", 90, "True")
+    LineFollow_double(1000, 90, "On", "On", 0, "False")
+    LineFollow_double(1000, 90, "On", "On", 90, "True")
+    LineFollow_double(1000, 90, "On", "On", -90, "True")
+    LineFollow_double(1000, 90, "On", "On", -90, "True")
+    LineFollow_double(1000, 90, "On", "On", -90, "True")
+    LineFollow_double(1000, 90, "On", "On", -180, "True")
+    LineFollow_double(1000, 90, "On", "On", 90, "True")
+    LineFollow_double(1000, 90, "On", "On", 90, "True")
+    LineFollow_double(1000, 90, "On", "On", 90, "True")
+    LineFollow_double(1000, 90, "On", "On", -90, "True")
+    LineFollow_double(1000, 90, "On", "On", 0, "False")
+    LineFollow_double(1000, 90, "On", "On", -90, "True")
+    LineFollow_double(1000, 90, "On", "On", 90, "True")
+    LineFollow_double(1000, 90, "On", "On", 90, "True")
+    LineFollow_double(70, 90, "On", "On", 0, "True")
+EndFunction
+
+Function Run_NoStop ()
+    LineFollow_double(1000, 90, "On", "On", -90, "False")
+    LineFollow_double(1000, 90, "On", "On", -90, "False")
+    LineFollow_double(1000, 90, "On", "On", 90, "False")
+    LineFollow_double(1000, 90, "On", "On", 0, "False")
+    LineFollow_double(1000, 90, "On", "On", 90, "False")
+    LineFollow_double(1000, 90, "On", "On", -90, "False")
+    LineFollow_double(1000, 90, "On", "On", -90, "False")
+    LineFollow_double(1000, 90, "On", "On", -90, "False")
+    LineFollow_double(1000, 90, "On", "On", -180, "False")
+    LineFollow_double(1000, 90, "On", "On", 90, "False")
+    LineFollow_double(1000, 90, "On", "On", 90, "False")
+    LineFollow_double(1000, 90, "On", "On", 90, "False")
+    LineFollow_double(1000, 90, "On", "On", -90, "False")
+    LineFollow_double(1000, 90, "On", "On", 0, "False")
+    LineFollow_double(1000, 90, "On", "On", -90, "False")
+    LineFollow_double(1000, 90, "On", "On", 90, "False")
+    LineFollow_double(1000, 90, "On", "On", 90, "False")
+    LineFollow_double(70, 90, "On", "On", 0, "False")
+EndFunction
+
+Run_Standard()
+'Run_NoStop()
+
+Program.Delay(1000)
